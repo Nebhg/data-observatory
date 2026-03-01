@@ -175,6 +175,16 @@ export default function OverviewPage() {
     }
   };
 
+  const handleRefreshStats = async () => {
+    setActionLoading(true);
+    try {
+      await api.refreshCache();
+      await refresh();
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   if (loading) return <LoadingSpinner />;
   if (error) return <ErrorMessage message={error} />;
   if (!data) return null;
@@ -214,6 +224,13 @@ export default function OverviewPage() {
         subtitle="Real-time monitoring of the macro data pipeline"
         action={
           <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              onClick={handleRefreshStats}
+              disabled={actionLoading}
+            >
+              Refresh Stats
+            </Button>
             <Button
               onClick={() => handleRun(false)}
               disabled={actionLoading}

@@ -269,6 +269,10 @@ export const api = {
   runDbt: (cmd: "run" | "test" = "run") =>
     fetchApi<DbtCommandResult>(`/api/dbt/${cmd}`, { method: "POST" }),
 
+  // Cache
+  refreshCache: () =>
+    fetchApi<{ status: string }>("/api/cache/refresh", { method: "POST" }),
+
   // SSE
   streamUrl: `/api/pipeline/stream`,
 };

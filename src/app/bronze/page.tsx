@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   api,
   BronzeEntry,
@@ -26,6 +26,19 @@ export default function BronzePage() {
     useCallback(() => api.getBronze(), []),
     30_000
   );
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await api.refreshCache();
+    } catch {
+      // ignore — still refresh local data
+    } finally {
+      await refresh();
+      setRefreshing(false);
+    }
+  };
 
   const grouped = useMemo(
     () => (data?.entries ? groupBronze(data.entries) : []),
@@ -42,7 +55,11 @@ export default function BronzePage() {
       <PageHeader
         title="Bronze Cache"
         subtitle="Raw API response cache layer"
-        action={<Button variant="secondary" onClick={refresh}>Refresh</Button>}
+        action={
+          <Button variant="secondary" onClick={handleRefresh} disabled={refreshing}>
+            {refreshing ? "Refreshing…" : "Refresh"}
+          </Button>
+        }
       />
 
       {/* Summary stats */}
