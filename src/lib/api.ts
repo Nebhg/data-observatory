@@ -1,11 +1,11 @@
 /**
  * API client for the Data Pipeline Observatory backend.
+ * Uses relative URLs — Next.js server proxies /api/* to the FastAPI backend.
+ * Configure INTERNAL_API_URL in .env.local (dev) or docker-compose (prod).
  */
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
 async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(path, {
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -270,5 +270,5 @@ export const api = {
     fetchApi<DbtCommandResult>(`/api/dbt/${cmd}`, { method: "POST" }),
 
   // SSE
-  streamUrl: `${API_BASE}/api/pipeline/stream`,
+  streamUrl: `/api/pipeline/stream`,
 };
