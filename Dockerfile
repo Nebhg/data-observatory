@@ -9,6 +9,9 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# INTERNAL_API_URL is baked in at build time so next.config.ts rewrites work
+ARG INTERNAL_API_URL=http://api:8000
+ENV INTERNAL_API_URL=$INTERNAL_API_URL
 # Ensure public dir exists (Next.js standalone requires it even if empty)
 RUN mkdir -p public
 RUN npm run build
