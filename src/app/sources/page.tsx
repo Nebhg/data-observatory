@@ -23,7 +23,7 @@ function SourcesInner() {
   const searchParams = useSearchParams();
   const highlightSource = searchParams.get("source");
 
-  const { data, error, loading, refresh } = usePolling<Source[]>(
+  const { data, error, loading, isRefreshing, refresh } = usePolling<Source[]>(
     useCallback(() => api.getSources(), []),
     30_000
   );
@@ -52,7 +52,11 @@ function SourcesInner() {
       <PageHeader
         title="Sources"
         subtitle={`${grouped.length} sources · ${grouped.reduce((s, g) => s + g.total_datasets, 0)} total datasets`}
-        action={<Button variant="secondary" onClick={refresh}>Refresh</Button>}
+        action={
+          <Button variant="secondary" onClick={refresh} disabled={isRefreshing}>
+            {isRefreshing ? "Refreshing…" : "Refresh"}
+          </Button>
+        }
       />
 
       <div className="space-y-2">

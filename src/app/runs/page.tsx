@@ -97,7 +97,7 @@ function RunChart({ runs }: { runs: RunSummary[] }) {
 }
 
 export default function RunsPage() {
-  const { data, error, loading, refresh } = usePolling<RunSummary[]>(
+  const { data, error, loading, isRefreshing, refresh } = usePolling<RunSummary[]>(
     useCallback(() => api.getRuns(50), []),
     30_000
   );
@@ -112,7 +112,11 @@ export default function RunsPage() {
       <PageHeader
         title="Runs"
         subtitle={`${runs.length} pipeline runs`}
-        action={<Button variant="secondary" onClick={refresh}>Refresh</Button>}
+        action={
+          <Button variant="secondary" onClick={refresh} disabled={isRefreshing}>
+            {isRefreshing ? "Refreshing…" : "Refresh"}
+          </Button>
+        }
       />
 
       {/* Visualization */}

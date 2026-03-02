@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 
 export function usePolling<T>(
   fetcher: () => Promise<T>,
@@ -8,9 +8,14 @@ export function usePolling<T>(
 ) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // loading = true only on the very first fetch (no data yet)
   const [loading, setLoading] = useState(true);
+  // isRefreshing = true on any subsequent manual or interval refresh
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const initialFetch = useRef(true);
 
-  const refresh = useCallback(async () => {
+  const _fetch = useCallback(async (manual: boolean) => {
+    if (manual) setIsRefreshing(true);
     try {
       const result = await fetcher();
       setData(result);
@@ -19,14 +24,19 @@ export function usePolling<T>(
       setError(e instanceof Error ? e.message : "Unknown error");
     } finally {
       setLoading(false);
+      if (manual) setIsRefreshing(false);
+      initialFetch.current = false;
     }
   }, [fetcher]);
 
-  useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, intervalMs);
-    return () => clearInterval(id);
-  }, [refresh, intervalMs]);
+  // Manual refresh exposed to callers
+  const refresh = useCallback(() => _fetch(true), [_fetch]);
 
-  return { data, error, loading, refresh };
+  useEffect(() => {
+    _fetch(false);
+    const id = setInterval(() => _fetch(false), intervalMs);
+    return () => clearInterval(id);
+  }, [_fetch, intervalMs]);
+
+  return { data, error, loading, isRefreshing, refresh };
 }
