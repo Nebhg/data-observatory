@@ -153,6 +153,54 @@ export interface DbtEntry {
   message: string;
 }
 
+// ─── Prediction Markets ─────────────────────────────────────
+
+export interface PredictionMarket {
+  id: string;
+  source: "polymarket" | "kalshi";
+  market_id: string;
+  title: string;
+  category: string;
+  outcome: string;
+  probability: number; // 0.0 – 1.0
+  volume_usd: number;
+  open_interest_usd: number;
+  close_time: string;
+  snapshot_time: string;
+  fetched_at: string;
+  resolved: boolean;
+  resolution: string | null;
+  market_url: string | null;
+}
+
+export interface MarketSnapshot {
+  id: string;
+  market_id: string;
+  probability: number;
+  volume_usd: number;
+  open_interest_usd: number;
+  snapshot_time: string;
+  fetched_at: string;
+}
+
+export interface PMSummary {
+  total_markets: number;
+  avg_probability: number;
+  total_volume_usd: number;
+  source_count: number;
+  category_count: number;
+  latest_snapshot_time: string | null;
+  sources: string[];
+  top_volume_markets: PredictionMarket[];
+}
+
+export interface MarketsPage {
+  markets: PredictionMarket[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface DbtCommandResult {
   command: string;
   returncode: number;
@@ -263,6 +311,61 @@ export const api = {
     }),
   getSchema: () => fetchApi<SchemaTable[]>("/api/schema"),
   getTableSchema: (table: string) => fetchApi<Record<string, unknown>>(`/api/schema/${table}`),
+
+  // Prediction Markets
+  getPMSummary: () => fetchApi<PMSummary>("/api/prediction-markets/summary"),
+  getMarkets: (params?: {
+    category?: string;
+    resolved?: boolean;
+    source?: string;
+    limit?: number;
+    offset?: number;
+    sort_by?: "probability" | "volume_usd" | "close_time" | "snapshot_time";
+    sort_dir?: "asc" | "desc";
+    time_horizon?: "all" | "upcoming" | "past";
+    min_volume?: number;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.category) q.set("category", params.category);
+    if (params?.resolved !== undefined) q.set("resolved", String(params.resolved));
+    if (params?.source) q.set("source", params.source);
+    if (params?.limit !== undefined) q.set("limit", String(params.limit));
+    if (params?.offset !== undefined) q.set("offset", String(params.offset));
+    if (params?.sort_by) q.set("sort_by", params.sort_by);
+    if (params?.sort_dir) q.set("sort_dir", params.sort_dir);
+    if (params?.time_horizon) q.set("time_horizon", params.time_horizon);
+    if (params?.min_volume !== undefined && params.min_volume > 0) q.set("min_volume", String(params.min_volume));
+    const qs = q.toString();
+    return fetchApi<MarketsPage>(`/api/prediction-markets/markets${qs ? `?${qs}` : ""}`);
+  },
+  getCategoryStats: () =>
+    fetchApi<{ category: string; count: number; avg_probability: number; total_volume_usd: number }[]>(
+      "/api/prediction-markets/category-stats"
+    ),
+  getMarket: (id: string) =>
+    fetchApi<PredictionMarket>(`/api/prediction-markets/markets/${encodeURIComponent(id)}`),
+  getMarketSnapshots: (id: string, since?: string, limit = 500) => {
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (since) q.set("since", since);
+    return fetchApi<MarketSnapshot[]>(
+      `/api/prediction-markets/markets/${encodeURIComponent(id)}/snapshots?${q}`
+    );
+  },
+  getMarketCategories: () =>
+    fetchApi<string[]>("/api/prediction-markets/categories"),
+  getTopMarkets: (params?: { limit?: number; min_volume?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.limit !== undefined) q.set("limit", String(params.limit));
+    if (params?.min_volume !== undefined) q.set("min_volume", String(params.min_volume));
+    const qs = q.toString();
+    return fetchApi<{ markets: PredictionMarket[]; total: number }>(
+      `/api/prediction-markets/top-markets${qs ? `?${qs}` : ""}`
+    );
+  },
+  searchMarkets: (q: string, limit = 50) =>
+    fetchApi<PredictionMarket[]>(
+      `/api/prediction-markets/search?q=${encodeURIComponent(q)}&limit=${limit}`
+    ),
 
   // dbt
   getDbtResults: () => fetchApi<DbtResults>("/api/dbt/results"),

@@ -1,0 +1,10 @@
+# Dockerfile.dev — Next.js hot-reload dev server
+# Used by docker-compose.override.yml for local development.
+# Does NOT build a production bundle — just installs deps and runs npm run dev.
+FROM node:20-alpine
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm ci
+COPY . .
+EXPOSE 3000
+CMD ["npm", "run", "dev"]

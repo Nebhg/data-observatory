@@ -11,6 +11,7 @@ const navItems = [
   { href: "/bronze", label: "Bronze", icon: "🥉" },
   { href: "/query", label: "SQL Editor", icon: "🔍" },
   { href: "/dbt", label: "dbt", icon: "🔧" },
+  { href: "/markets", label: "Markets", icon: "📈" },
 ];
 
 export function Sidebar() {
