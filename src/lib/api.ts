@@ -161,6 +161,11 @@ export interface PredictionMarket {
   market_id: string;
   title: string;
   category: string;
+  event_id: string | null;
+  event_title: string | null;
+  event_subtitle: string | null;
+  contract_label: string | null;
+  event_volume_usd: number | null;
   outcome: string;
   probability: number; // 0.0 – 1.0
   volume_usd: number;
@@ -171,6 +176,54 @@ export interface PredictionMarket {
   resolved: boolean;
   resolution: string | null;
   market_url: string | null;
+}
+
+export interface PredictionMarketEvent {
+  source: "polymarket" | "kalshi";
+  event_id: string;
+  event_title: string;
+  event_subtitle: string | null;
+  event_url: string | null;
+  category: string;
+  total_volume_usd: number;
+  market_count: number;
+  latest_snapshot_time: string | null;
+  markets: PredictionMarket[];
+}
+
+export interface PredictionMarketEventHistorySeries {
+  market_id: string;
+  title: string;
+  label: string;
+  outcome: string | null;
+  latest_probability: number;
+  latest_volume_usd: number;
+  snapshots: PredictionMarketEventSnapshot[];
+}
+
+export interface PredictionMarketEventHistory {
+  event: Omit<PredictionMarketEvent, "markets">;
+  series: PredictionMarketEventHistorySeries[];
+}
+
+export interface PredictionMarketEventSnapshot {
+  market_id: string;
+  probability: number;
+  volume_usd: number;
+  open_interest_usd: number;
+  snapshot_time: string;
+  fetched_at: string;
+}
+
+export interface CategoryVolumeHistoryPoint {
+  snapshot_date: string;
+  category: string;
+  total_volume_usd: number;
+}
+
+export interface CategoryVolumeHistory {
+  categories: string[];
+  points: CategoryVolumeHistoryPoint[];
 }
 
 export interface MarketSnapshot {
@@ -192,6 +245,8 @@ export interface PMSummary {
   latest_snapshot_time: string | null;
   sources: string[];
   top_volume_markets: PredictionMarket[];
+  high_conviction_count: number;
+  closing_this_week: number;
 }
 
 export interface MarketsPage {
@@ -338,10 +393,33 @@ export const api = {
     const qs = q.toString();
     return fetchApi<MarketsPage>(`/api/prediction-markets/markets${qs ? `?${qs}` : ""}`);
   },
-  getCategoryStats: () =>
-    fetchApi<{ category: string; count: number; avg_probability: number; total_volume_usd: number }[]>(
-      "/api/prediction-markets/category-stats"
-    ),
+  getCategoryStats: (params?: { source?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.source) q.set("source", params.source);
+    const qs = q.toString();
+    return fetchApi<{
+      category: string;
+      count: number;
+      event_count: number;
+      avg_probability: number;
+      total_volume_usd: number;
+      polymarket_volume: number;
+      kalshi_volume: number;
+      high_conviction_count: number;
+    }[]>(
+      `/api/prediction-markets/category-stats${qs ? `?${qs}` : ""}`
+    );
+  },
+  getCategoryVolumeHistory: (params?: { source?: string; categories_limit?: number; days?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.source) q.set("source", params.source);
+    if (params?.categories_limit !== undefined) q.set("categories_limit", String(params.categories_limit));
+    if (params?.days !== undefined) q.set("days", String(params.days));
+    const qs = q.toString();
+    return fetchApi<CategoryVolumeHistory>(
+      `/api/prediction-markets/category-volume-history${qs ? `?${qs}` : ""}`
+    );
+  },
   getMarket: (id: string) =>
     fetchApi<PredictionMarket>(`/api/prediction-markets/markets/${encodeURIComponent(id)}`),
   getMarketSnapshots: (id: string, since?: string, limit = 500) => {
@@ -360,6 +438,29 @@ export const api = {
     const qs = q.toString();
     return fetchApi<{ markets: PredictionMarket[]; total: number }>(
       `/api/prediction-markets/top-markets${qs ? `?${qs}` : ""}`
+    );
+  },
+  getTopEvents: (params?: { limit?: number; min_volume?: number; source?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.limit !== undefined) q.set("limit", String(params.limit));
+    if (params?.min_volume !== undefined) q.set("min_volume", String(params.min_volume));
+    if (params?.source) q.set("source", params.source);
+    const qs = q.toString();
+    return fetchApi<{ events: PredictionMarketEvent[]; total: number }>(
+      `/api/prediction-markets/top-events${qs ? `?${qs}` : ""}`
+    );
+  },
+  getEvent: (source: string, eventId: string) =>
+    fetchApi<PredictionMarketEvent>(
+      `/api/prediction-markets/events/${encodeURIComponent(source)}/${encodeURIComponent(eventId)}`
+    ),
+  getEventHistory: (source: string, eventId: string, params?: { top_n?: number; points_per_series?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.top_n !== undefined) q.set("top_n", String(params.top_n));
+    if (params?.points_per_series !== undefined) q.set("points_per_series", String(params.points_per_series));
+    const qs = q.toString();
+    return fetchApi<PredictionMarketEventHistory>(
+      `/api/prediction-markets/events/${encodeURIComponent(source)}/${encodeURIComponent(eventId)}/history${qs ? `?${qs}` : ""}`
     );
   },
   searchMarkets: (q: string, limit = 50) =>

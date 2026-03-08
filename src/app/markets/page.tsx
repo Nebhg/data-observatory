@@ -3,6 +3,16 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import {
   PageHeader,
   MetricCard,
   Card,
@@ -11,10 +21,26 @@ import {
   ErrorMessage,
 } from "@/components/ui";
 import { usePolling } from "@/hooks/usePolling";
-import { api, type PMSummary, type PredictionMarket, type MarketsPage } from "@/lib/api";
+import {
+  api,
+  type CategoryVolumeHistory,
+  type PMSummary,
+  type PredictionMarket,
+  type PredictionMarketEvent,
+  type MarketsPage as MarketsPageResult,
+} from "@/lib/api";
 
-type TopMarketsResult = { markets: PredictionMarket[]; total: number };
-type CategoryStat = { category: string; count: number; avg_probability: number; total_volume_usd: number };
+type TopEventsResult = { events: PredictionMarketEvent[]; total: number };
+type CategoryStat = {
+  category: string;
+  count: number;
+  event_count: number;
+  avg_probability: number;
+  total_volume_usd: number;
+  polymarket_volume: number;
+  kalshi_volume: number;
+  high_conviction_count: number;
+};
 type TimeHorizon = "all" | "upcoming" | "past";
 type SortCol = "probability" | "volume_usd" | "close_time";
 
@@ -41,9 +67,10 @@ const VOLUME_PRESETS = [
   { label: "$10M+", value: 10_000_000 },
 ];
 
-// ─── Helpers ──────────────────────────────────────────────
+const CATEGORY_COLORS = ["#f97316", "#38bdf8", "#22c55e", "#facc15", "#a78bfa", "#fb7185"];
 
 function fmtVolume(v: number): string {
+  if (v >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(2)}B`;
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
   if (v >= 1_000) return `$${(v / 1_000).toFixed(0)}K`;
   return `$${v.toFixed(0)}`;
@@ -53,14 +80,49 @@ function fmtPct(p: number): string {
   return `${(p * 100).toFixed(1)}%`;
 }
 
-function activeFilterCount(f: FilterState): number {
-  let n = 0;
-  if (!f.hideResolved) n++;
-  if (f.sources.length > 0) n++;
-  if (f.categories.length > 0) n++;
-  if (f.timeHorizon !== "upcoming") n++;
-  if (f.minVolume > 0) n++;
-  return n;
+function titleCase(value: string): string {
+  return value
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function marketLabel(market: PredictionMarket): string {
+  return market.contract_label || market.outcome || market.title;
+}
+
+function activeFilterCount(filters: FilterState): number {
+  let count = 0;
+  if (!filters.hideResolved) count++;
+  if (filters.sources.length > 0) count++;
+  if (filters.categories.length > 0) count++;
+  if (filters.timeHorizon !== "upcoming") count++;
+  if (filters.minVolume > 0) count++;
+  return count;
+}
+
+function buildTrendRows(history: CategoryVolumeHistory): Array<Record<string, string | number>> {
+  const rows = new Map<string, Record<string, string | number>>();
+  for (const point of history.points) {
+    const row = rows.get(point.snapshot_date) ?? { snapshot_date: point.snapshot_date };
+    row[point.category] = point.total_volume_usd;
+    rows.set(point.snapshot_date, row);
+  }
+
+  const ordered = [...rows.values()].sort((a, b) =>
+    String(a.snapshot_date).localeCompare(String(b.snapshot_date))
+  );
+
+  for (const row of ordered) {
+    for (const category of history.categories) {
+      if (!(category in row)) {
+        row[category] = 0;
+      }
+    }
+  }
+
+  return ordered;
 }
 
 function ProbBar({ value }: { value: number }) {
@@ -74,86 +136,88 @@ function ProbBar({ value }: { value: number }) {
   return (
     <div className="flex items-center gap-2">
       <div className="flex-1 h-1.5 rounded-full bg-zinc-800 overflow-hidden">
-        <div
-          className={`h-full rounded-full ${color} transition-all duration-300`}
-          style={{ width: `${pct}%` }}
-        />
+        <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
       </div>
       <span className="text-xs tabular-nums w-10 text-right">{fmtPct(value)}</span>
     </div>
   );
 }
 
-// ─── Category Sentiment Map ────────────────────────────────
-
-function CategorySentimentMap({ stats }: { stats: CategoryStat[] }) {
-  if (!stats || stats.length === 0) return null;
-  const totalVol = stats.reduce((sum, s) => sum + s.total_volume_usd, 0) || 1;
+function CategoryOverviewGrid({ stats }: { stats: CategoryStat[] }) {
+  if (stats.length === 0) return null;
+  const totalVolume = stats.reduce((sum, stat) => sum + stat.total_volume_usd, 0) || 1;
 
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
-        <p className="text-xs text-[var(--text-muted)] uppercase tracking-wider">
-          Market Sentiment by Category
-        </p>
-        <p className="text-[11px] text-[var(--text-muted)]">avg YES probability · sorted by volume</p>
+        <div>
+          <p className="text-xs text-[var(--text-muted)] uppercase tracking-wider">
+            Category Landscape
+          </p>
+          <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
+            Total volume, breadth, and conviction split across the full tracked universe
+          </p>
+        </div>
       </div>
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-        {stats.map((s) => {
-          const pct = Math.round(s.avg_probability * 100);
-          const volShare = s.total_volume_usd / totalVol;
-          const sentiment = pct >= 65 ? "Bullish" : pct >= 40 ? "Mixed" : "Bearish";
-          const sentimentColor =
-            pct >= 65 ? "text-emerald-400" : pct >= 40 ? "text-indigo-400" : "text-red-400";
-          const barColor =
-            pct >= 65 ? "bg-emerald-500" : pct >= 40 ? "bg-indigo-500" : "bg-red-500";
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+        {stats.map((stat) => {
+          const share = stat.total_volume_usd / totalVolume;
+          const convictionShare = stat.count > 0 ? stat.high_conviction_count / stat.count : 0;
+          const dominantSource =
+            stat.polymarket_volume > stat.kalshi_volume * 1.1
+              ? "Polymarket"
+              : stat.kalshi_volume > stat.polymarket_volume * 1.1
+              ? "Kalshi"
+              : "Mixed";
+          const sourceSplit =
+            stat.total_volume_usd > 0 ? stat.polymarket_volume / stat.total_volume_usd : 0;
 
           return (
             <div
-              key={s.category}
-              className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-4 space-y-3"
+              key={stat.category}
+              className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-4 space-y-4"
             >
-              {/* Header */}
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="text-xs font-semibold capitalize truncate">{s.category}</p>
-                  <p className={`text-[10px] font-medium mt-0.5 ${sentimentColor}`}>{sentiment}</p>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold">{titleCase(stat.category)}</p>
+                  <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
+                    {stat.event_count.toLocaleString()} events · {stat.count.toLocaleString()} contracts
+                  </p>
                 </div>
-                <span className="text-[10px] text-[var(--text-muted)] shrink-0">{s.count} mkts</span>
+                <span className="text-[10px] px-2 py-1 rounded-full border border-[var(--border)] text-[var(--text-muted)]">
+                  {dominantSource}
+                </span>
               </div>
 
-              {/* YES probability bar */}
-              <div className="space-y-1">
-                <div className="flex justify-between items-baseline">
-                  <span className="text-[9px] text-[var(--text-muted)]">NO</span>
-                  <span className="text-sm font-bold tabular-nums">{pct}%</span>
-                  <span className="text-[9px] text-[var(--text-muted)]">YES</span>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Volume</p>
+                  <p className="text-xl font-semibold mt-1">{fmtVolume(stat.total_volume_usd)}</p>
+                  <p className="text-[11px] text-[var(--text-muted)] mt-1">
+                    {(share * 100).toFixed(0)}% of tracked volume
+                  </p>
                 </div>
-                <div className="h-2 rounded-full bg-zinc-800 overflow-hidden">
-                  <div
-                    className={`h-full rounded-full ${barColor} transition-all duration-500`}
-                    style={{ width: `${pct}%` }}
-                  />
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Conviction</p>
+                  <p className="text-xl font-semibold mt-1">{Math.round(convictionShare * 100)}%</p>
+                  <p className="text-[11px] text-[var(--text-muted)] mt-1">
+                    {stat.high_conviction_count.toLocaleString()} contracts at 70%+/30%-
+                  </p>
                 </div>
               </div>
 
-              {/* Volume + share bar */}
-              <div className="space-y-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] text-[var(--text-muted)]">Volume</span>
-                  <span className="text-xs font-semibold tabular-nums">
-                    {fmtVolume(s.total_volume_usd)}
+              <div className="space-y-2">
+                <div className="flex justify-between items-center text-[11px] text-[var(--text-muted)]">
+                  <span>Source split</span>
+                  <span>
+                    {fmtVolume(stat.polymarket_volume)} PM · {fmtVolume(stat.kalshi_volume)} KS
                   </span>
                 </div>
-                <div className="h-1 rounded-full bg-zinc-800 overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-zinc-400 transition-all duration-500"
-                    style={{ width: `${volShare * 100}%` }}
-                  />
+                <div className="h-2 rounded-full bg-zinc-900 overflow-hidden flex">
+                  <div className="h-full bg-sky-400" style={{ width: `${sourceSplit * 100}%` }} />
+                  <div className="h-full bg-fuchsia-400" style={{ width: `${(1 - sourceSplit) * 100}%` }} />
                 </div>
-                <p className="text-[9px] text-[var(--text-muted)]">
-                  {(volShare * 100).toFixed(0)}% of total market volume
-                </p>
               </div>
             </div>
           );
@@ -163,7 +227,80 @@ function CategorySentimentMap({ stats }: { stats: CategoryStat[] }) {
   );
 }
 
-// ─── Filter Modal ─────────────────────────────────────────
+function CategoryVolumeTrendChart({ history }: { history: CategoryVolumeHistory }) {
+  if (history.categories.length === 0 || history.points.length === 0) return null;
+  const rows = buildTrendRows(history);
+
+  return (
+    <div className="mt-8">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <p className="text-xs text-[var(--text-muted)] uppercase tracking-wider">
+            Category Volume Trend
+          </p>
+          <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
+            Daily total volume by category using the latest snapshot per market each day
+          </p>
+        </div>
+      </div>
+
+      <ResponsiveContainer width="100%" height={320}>
+        <LineChart data={rows} margin={{ top: 8, right: 16, left: 4, bottom: 8 }}>
+          <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
+          <XAxis
+            dataKey="snapshot_date"
+            tickFormatter={(value) =>
+              new Date(`${value}T00:00:00`).toLocaleDateString(undefined, {
+                month: "short",
+                day: "numeric",
+              })
+            }
+            tick={{ fontSize: 10, fill: "var(--text-muted)" }}
+            tickLine={false}
+            axisLine={false}
+            minTickGap={28}
+          />
+          <YAxis
+            tickFormatter={(value) => fmtVolume(value as number)}
+            tick={{ fontSize: 10, fill: "var(--text-muted)" }}
+            tickLine={false}
+            axisLine={false}
+            width={72}
+          />
+          <Tooltip
+            formatter={(value: unknown, name: string) => [fmtVolume(value as number), titleCase(name)]}
+            labelFormatter={(label) =>
+              new Date(`${label}T00:00:00`).toLocaleDateString(undefined, {
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+              })
+            }
+            contentStyle={{
+              background: "var(--bg-card)",
+              border: "1px solid var(--border)",
+              borderRadius: "12px",
+              fontSize: "11px",
+            }}
+          />
+          <Legend iconSize={8} wrapperStyle={{ fontSize: 11 }} />
+          {history.categories.map((category, index) => (
+            <Line
+              key={category}
+              type="monotone"
+              dataKey={category}
+              stroke={CATEGORY_COLORS[index % CATEGORY_COLORS.length]}
+              strokeWidth={2.25}
+              dot={false}
+              activeDot={{ r: 4 }}
+              connectNulls
+            />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
 
 function FilterModal({
   open,
@@ -176,17 +313,15 @@ function FilterModal({
   onClose: () => void;
   filters: FilterState;
   allCategories: string[];
-  onApply: (f: FilterState) => void;
+  onApply: (filters: FilterState) => void;
 }) {
   const [draft, setDraft] = useState<FilterState>(filters);
   const ref = useRef<HTMLDivElement>(null);
 
-  // Sync draft when modal opens
   useEffect(() => {
     if (open) setDraft(filters);
   }, [open, filters]);
 
-  // Outside click to close
   useEffect(() => {
     if (!open) return;
     function handler(e: MouseEvent) {
@@ -198,19 +333,21 @@ function FilterModal({
 
   if (!open) return null;
 
-  function toggleSource(s: string) {
-    setDraft((d) => ({
-      ...d,
-      sources: d.sources.includes(s) ? d.sources.filter((x) => x !== s) : [...d.sources, s],
+  function toggleSource(source: string) {
+    setDraft((current) => ({
+      ...current,
+      sources: current.sources.includes(source)
+        ? current.sources.filter((item) => item !== source)
+        : [...current.sources, source],
     }));
   }
 
-  function toggleCategory(c: string) {
-    setDraft((d) => ({
-      ...d,
-      categories: d.categories.includes(c)
-        ? d.categories.filter((x) => x !== c)
-        : [...d.categories, c],
+  function toggleCategory(category: string) {
+    setDraft((current) => ({
+      ...current,
+      categories: current.categories.includes(category)
+        ? current.categories.filter((item) => item !== category)
+        : [...current.categories, category],
     }));
   }
 
@@ -223,12 +360,7 @@ function FilterModal({
 
   const Checkbox = ({ checked, onChange, label }: { checked: boolean; onChange: () => void; label: string }) => (
     <label className="flex items-center gap-2 cursor-pointer text-sm select-none hover:text-[var(--text)] text-[var(--text-muted)]">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={onChange}
-        className="accent-[var(--accent)] w-3.5 h-3.5"
-      />
+      <input type="checkbox" checked={checked} onChange={onChange} className="accent-[var(--accent)] w-3.5 h-3.5" />
       {label}
     </label>
   );
@@ -241,10 +373,7 @@ function FilterModal({
       >
         <div className="flex items-center justify-between">
           <p className="text-sm font-semibold">Filters</p>
-          <button
-            onClick={onClose}
-            className="text-[var(--text-muted)] hover:text-[var(--text)] text-lg leading-none"
-          >
+          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text)] text-lg leading-none">
             ×
           </button>
         </div>
@@ -252,51 +381,51 @@ function FilterModal({
         <Section title="Status">
           <Checkbox
             checked={draft.hideResolved}
-            onChange={() => setDraft((d) => ({ ...d, hideResolved: !d.hideResolved }))}
+            onChange={() => setDraft((current) => ({ ...current, hideResolved: !current.hideResolved }))}
             label="Hide resolved markets"
           />
         </Section>
 
         <Section title="Time Horizon">
-          {(["upcoming", "all", "past"] as TimeHorizon[]).map((t) => (
-            <label key={t} className="flex items-center gap-2 cursor-pointer text-sm select-none hover:text-[var(--text)] text-[var(--text-muted)]">
+          {(["upcoming", "all", "past"] as TimeHorizon[]).map((timeHorizon) => (
+            <label key={timeHorizon} className="flex items-center gap-2 cursor-pointer text-sm select-none hover:text-[var(--text)] text-[var(--text-muted)]">
               <input
                 type="radio"
                 name="timeHorizon"
-                checked={draft.timeHorizon === t}
-                onChange={() => setDraft((d) => ({ ...d, timeHorizon: t }))}
+                checked={draft.timeHorizon === timeHorizon}
+                onChange={() => setDraft((current) => ({ ...current, timeHorizon }))}
                 className="accent-[var(--accent)]"
               />
-              {t === "upcoming" ? "Upcoming / Active" : t === "all" ? "All" : "Past / Resolved"}
+              {timeHorizon === "upcoming" ? "Upcoming / Active" : timeHorizon === "all" ? "All" : "Past / Resolved"}
             </label>
           ))}
         </Section>
 
         <Section title="Min Volume">
           <div className="flex flex-wrap gap-2">
-            {VOLUME_PRESETS.map((p) => (
+            {VOLUME_PRESETS.map((preset) => (
               <button
-                key={p.value}
-                onClick={() => setDraft((d) => ({ ...d, minVolume: p.value }))}
+                key={preset.value}
+                onClick={() => setDraft((current) => ({ ...current, minVolume: preset.value }))}
                 className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors border ${
-                  draft.minVolume === p.value
+                  draft.minVolume === preset.value
                     ? "bg-[var(--accent)] border-[var(--accent)] text-white"
                     : "border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)]"
                 }`}
               >
-                {p.label}
+                {preset.label}
               </button>
             ))}
           </div>
         </Section>
 
         <Section title="Source">
-          {["polymarket", "kalshi"].map((s) => (
+          {["polymarket", "kalshi"].map((source) => (
             <Checkbox
-              key={s}
-              checked={draft.sources.includes(s)}
-              onChange={() => toggleSource(s)}
-              label={s === "polymarket" ? "Polymarket" : "Kalshi"}
+              key={source}
+              checked={draft.sources.includes(source)}
+              onChange={() => toggleSource(source)}
+              label={source === "polymarket" ? "Polymarket" : "Kalshi"}
             />
           ))}
         </Section>
@@ -304,12 +433,12 @@ function FilterModal({
         {allCategories.length > 0 && (
           <Section title="Category">
             <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
-              {allCategories.map((c) => (
+              {allCategories.map((category) => (
                 <Checkbox
-                  key={c}
-                  checked={draft.categories.includes(c)}
-                  onChange={() => toggleCategory(c)}
-                  label={c}
+                  key={category}
+                  checked={draft.categories.includes(category)}
+                  onChange={() => toggleCategory(category)}
+                  label={titleCase(category)}
                 />
               ))}
             </div>
@@ -317,16 +446,15 @@ function FilterModal({
         )}
 
         <div className="flex gap-2 pt-1">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => setDraft(DEFAULT_FILTERS)}
-          >
+          <Button variant="secondary" size="sm" onClick={() => setDraft(DEFAULT_FILTERS)}>
             Reset
           </Button>
           <Button
             size="sm"
-            onClick={() => { onApply(draft); onClose(); }}
+            onClick={() => {
+              onApply(draft);
+              onClose();
+            }}
           >
             Apply
           </Button>
@@ -336,67 +464,81 @@ function FilterModal({
   );
 }
 
-// ─── Data freshness badge ─────────────────────────────────
-
 function DataFreshnessBadge({ snapshotTime }: { snapshotTime: string | null }) {
   if (!snapshotTime) return null;
   const ageMs = Date.now() - new Date(snapshotTime).getTime();
   const ageHours = ageMs / 3_600_000;
-  const label =
-    ageHours < 1 ? "< 1h ago" : ageHours < 24 ? `${Math.floor(ageHours)}h ago` : `${Math.floor(ageHours / 24)}d ago`;
+  const label = ageHours < 1 ? "< 1h ago" : ageHours < 24 ? `${Math.floor(ageHours)}h ago` : `${Math.floor(ageHours / 24)}d ago`;
   const isStale = ageHours > 8;
-  return (
-    <span className={`text-[11px] tabular-nums ${isStale ? "text-amber-400" : "text-[var(--text-muted)]"}`}>
-      Data: {label}
-    </span>
-  );
+  return <span className={`text-[11px] tabular-nums ${isStale ? "text-amber-400" : "text-[var(--text-muted)]"}`}>Data: {label}</span>;
 }
 
-// ─── Key signal card ──────────────────────────────────────
-
-function KeySignalCard({ market }: { market: PredictionMarket }) {
+function EventGroupCard({ event }: { event: PredictionMarketEvent }) {
   const router = useRouter();
-  const pct = Math.round(market.probability * 100);
-  const color =
-    pct >= 70 ? "text-[var(--success)]" : pct >= 40 ? "text-[var(--accent)]" : "text-[var(--error)]";
+  const lead = event.markets[0];
+  const topProb = lead ? Math.round(lead.probability * 100) : 0;
+  const color = topProb >= 70 ? "text-[var(--success)]" : topProb >= 40 ? "text-[var(--accent)]" : "text-[var(--error)]";
+  const preview = event.markets.slice(0, 4);
+
+  function goToEvent() {
+    router.push(`/markets/events/${encodeURIComponent(event.source)}/${encodeURIComponent(event.event_id)}`);
+  }
 
   return (
-    <div
-      role="link"
-      tabIndex={0}
-      onClick={() => router.push(`/markets/${encodeURIComponent(market.market_id)}?source=${market.source}`)}
-      onKeyDown={(e) => e.key === "Enter" && router.push(`/markets/${encodeURIComponent(market.market_id)}?source=${market.source}`)}
-      className="flex flex-col gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-4 hover:border-[var(--accent)]/40 transition-colors cursor-pointer"
-    >
-      <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider truncate">
-        {market.source === "polymarket" ? "PM" : "KS"} · {market.category}
-      </p>
-      <p className={`text-4xl font-bold tabular-nums ${color}`}>{pct}%</p>
-      <p className="text-sm leading-snug line-clamp-2 flex-1">{market.title}</p>
-      <div className="flex items-center justify-between mt-auto pt-1">
-        <span className="text-[10px] text-[var(--text-muted)]">{fmtVolume(market.volume_usd)} vol</span>
-        {market.market_url && (
-          <a
-            href={market.market_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="text-[10px] text-[var(--accent)] hover:underline shrink-0"
-          >
-            {market.source === "polymarket" ? "Polymarket ↗" : "Kalshi ↗"}
-          </a>
+    <div className="flex flex-col gap-4 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 hover:border-[var(--accent)]/50 transition-colors">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[10px] uppercase tracking-[0.24em] text-[var(--text-muted)]">
+            {event.source === "polymarket" ? "PM" : "KS"} · {titleCase(event.category)}
+          </p>
+          <button onClick={goToEvent} className="text-left mt-2 group">
+            <p className={`text-4xl font-bold tabular-nums ${color}`}>{topProb}%</p>
+            <p className="text-base leading-tight mt-2 group-hover:text-[var(--accent)] transition-colors">{event.event_title}</p>
+          </button>
+          {event.event_subtitle && <p className="text-[11px] text-[var(--text-muted)] mt-1 line-clamp-2">{event.event_subtitle}</p>}
+        </div>
+        <div className="text-right shrink-0">
+          <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Contracts</p>
+          <p className="text-sm font-semibold mt-1">{event.market_count}</p>
+        </div>
+      </div>
+
+      <div className="space-y-2 border-t border-[var(--border)] pt-3">
+        {preview.map((market) => (
+          <div key={market.market_id} className="flex items-center justify-between gap-3 text-sm">
+            <span className="truncate text-[var(--text-muted)]">{marketLabel(market)}</span>
+            <span className="tabular-nums font-semibold shrink-0">{Math.round(market.probability * 100)}%</span>
+          </div>
+        ))}
+        {event.market_count > preview.length && (
+          <button onClick={goToEvent} className="text-[11px] text-[var(--accent)] hover:underline">
+            View all {event.market_count} contracts
+          </button>
         )}
+      </div>
+
+      <div className="flex items-center justify-between gap-3 mt-auto pt-1 text-[11px] text-[var(--text-muted)]">
+        <span>{fmtVolume(event.total_volume_usd)} total volume</span>
+        <div className="flex items-center gap-3">
+          <button onClick={goToEvent} className="text-[var(--accent)] hover:underline">
+            Open event
+          </button>
+          {event.event_url && (
+            <a href={event.event_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
+              {event.source === "polymarket" ? "Polymarket ↗" : "Kalshi ↗"}
+            </a>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-// ─── Market row ───────────────────────────────────────────
-
 function MarketRow({ market }: { market: PredictionMarket }) {
   const router = useRouter();
-  const closeDate = market.close_time ? new Date(market.close_time + "T00:00:00") : null;
+  const closeDate = market.close_time ? new Date(`${market.close_time}T00:00:00`) : null;
   const isExpired = closeDate ? closeDate < new Date() : false;
+
   return (
     <div
       role="link"
@@ -405,29 +547,16 @@ function MarketRow({ market }: { market: PredictionMarket }) {
       onKeyDown={(e) => e.key === "Enter" && router.push(`/markets/${encodeURIComponent(market.market_id)}?source=${market.source}`)}
       className="flex items-center gap-4 px-4 py-3 hover:bg-[var(--bg-card-hover)] transition-colors border-b border-[var(--border)] last:border-0 group cursor-pointer"
     >
-      <span
-        className={`shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded uppercase tracking-wide ${
-          market.source === "polymarket"
-            ? "bg-blue-500/15 text-blue-400"
-            : "bg-purple-500/15 text-purple-400"
-        }`}
-      >
+      <span className={`shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded uppercase tracking-wide ${market.source === "polymarket" ? "bg-blue-500/15 text-blue-400" : "bg-purple-500/15 text-purple-400"}`}>
         {market.source === "polymarket" ? "PM" : "KS"}
       </span>
 
       <div className="flex-1 min-w-0">
-        <p className="text-sm truncate group-hover:text-[var(--accent)] transition-colors">
-          {market.title}
-        </p>
-        <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
-          {market.outcome} ·{" "}
-          {closeDate ? (
-            <span className={isExpired ? "text-[var(--error)]" : ""}>
-              closes {closeDate.toLocaleDateString()}
-            </span>
-          ) : (
-            <span>open-ended</span>
-          )}
+        <p className="text-sm truncate group-hover:text-[var(--accent)] transition-colors">{market.title}</p>
+        <p className="text-[11px] text-[var(--text-muted)] mt-0.5 truncate">
+          {market.event_title ? `${market.event_title} · ` : ""}
+          {market.outcome} · {closeDate ? `closes ${closeDate.toLocaleDateString()}` : "open-ended"}
+          {isExpired ? " · expired" : ""}
         </p>
       </div>
 
@@ -435,22 +564,11 @@ function MarketRow({ market }: { market: PredictionMarket }) {
         <ProbBar value={market.probability} />
       </div>
 
-      <span className="w-16 shrink-0 text-right text-xs text-[var(--text-muted)] tabular-nums">
-        {fmtVolume(market.volume_usd)}
-      </span>
-
-      <span className="w-20 shrink-0 text-right text-[10px] text-[var(--text-muted)] truncate capitalize">
-        {market.category}
-      </span>
+      <span className="w-16 shrink-0 text-right text-xs text-[var(--text-muted)] tabular-nums">{fmtVolume(market.volume_usd)}</span>
+      <span className="w-20 shrink-0 text-right text-[10px] text-[var(--text-muted)] truncate capitalize">{titleCase(market.category)}</span>
 
       {market.market_url ? (
-        <a
-          href={market.market_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={(e) => e.stopPropagation()}
-          className="shrink-0 text-[10px] text-[var(--accent)] hover:underline w-4"
-        >
+        <a href={market.market_url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="shrink-0 text-[10px] text-[var(--accent)] hover:underline w-4">
           ↗
         </a>
       ) : (
@@ -459,8 +577,6 @@ function MarketRow({ market }: { market: PredictionMarket }) {
     </div>
   );
 }
-
-// ─── Sortable column header ───────────────────────────────
 
 function SortableHeader({
   col,
@@ -480,19 +596,12 @@ function SortableHeader({
   const active = sortBy === col;
   const arrow = !active ? "↕" : sortDir === "desc" ? "↓" : "↑";
   return (
-    <button
-      onClick={() => onSort(col)}
-      className={`flex items-center gap-0.5 transition-colors ${
-        active ? "text-[var(--accent)]" : "text-[var(--text-muted)] hover:text-[var(--text)]"
-      } ${className ?? ""}`}
-    >
+    <button onClick={() => onSort(col)} className={`flex items-center gap-0.5 transition-colors ${active ? "text-[var(--accent)]" : "text-[var(--text-muted)] hover:text-[var(--text)]"} ${className ?? ""}`}>
       {label}
       <span className="text-[8px] ml-0.5">{arrow}</span>
     </button>
   );
 }
-
-// ─── Main page ────────────────────────────────────────────
 
 const PAGE_SIZE = 50;
 
@@ -505,7 +614,7 @@ export default function MarketsPage() {
 
   function handleSort(col: SortCol) {
     if (col === sortBy) {
-      setSortDir((d) => (d === "desc" ? "asc" : "desc"));
+      setSortDir((current) => (current === "desc" ? "asc" : "desc"));
     } else {
       setSortBy(col);
       setSortDir(col === "close_time" ? "asc" : "desc");
@@ -513,23 +622,24 @@ export default function MarketsPage() {
     setOffset(0);
   }
 
-  function applyFilters(f: FilterState) {
-    // When switching to past, default close_time sort to desc
-    if (f.timeHorizon === "past" && sortBy === "close_time") {
+  function applyFilters(nextFilters: FilterState) {
+    if (nextFilters.timeHorizon === "past" && sortBy === "close_time") {
       setSortDir("desc");
-    } else if (f.timeHorizon === "upcoming" && sortBy === "close_time") {
+    } else if (nextFilters.timeHorizon === "upcoming" && sortBy === "close_time") {
       setSortDir("asc");
     }
-    setFilters(f);
+    setFilters(nextFilters);
     setOffset(0);
   }
 
+  const singleSource = filters.sources.length === 1 ? filters.sources[0] : undefined;
+
   const fetchData = useCallback(async () => {
-    const [summary, page, cats, topMarkets, categoryStats] = await Promise.all([
+    const [summary, page, categories, topEvents, categoryStats, categoryVolumeHistory] = await Promise.all([
       api.getPMSummary(),
       api.getMarkets({
         category: filters.categories.length === 1 ? filters.categories[0] : undefined,
-        source: filters.sources.length === 1 ? filters.sources[0] : undefined,
+        source: singleSource,
         resolved: filters.hideResolved ? false : undefined,
         limit: PAGE_SIZE,
         offset,
@@ -539,19 +649,21 @@ export default function MarketsPage() {
         min_volume: filters.minVolume > 0 ? filters.minVolume : undefined,
       }),
       api.getMarketCategories(),
-      api.getTopMarkets({ limit: 8, min_volume: 5000 }),
-      api.getCategoryStats(),
+      api.getTopEvents({ limit: 8, min_volume: filters.minVolume, source: singleSource }),
+      api.getCategoryStats({ source: singleSource }),
+      api.getCategoryVolumeHistory({ source: singleSource, categories_limit: 6, days: 90 }),
     ]);
-    return { summary, page, cats, topMarkets, categoryStats };
-  }, [filters, offset, sortBy, sortDir]);
+    return { summary, page, categories, topEvents, categoryStats, categoryVolumeHistory };
+  }, [filters, offset, singleSource, sortBy, sortDir]);
 
   const { data, loading, error, isRefreshing, refresh } = usePolling(fetchData, 60_000);
 
   const summary: PMSummary | undefined = data?.summary;
-  const page: MarketsPage | undefined = data?.page;
-  const categories: string[] = data?.cats ?? [];
-  const topMarkets: TopMarketsResult | undefined = data?.topMarkets;
+  const page: MarketsPageResult | undefined = data?.page;
+  const categories: string[] = data?.categories ?? [];
+  const topEvents: TopEventsResult | undefined = data?.topEvents;
   const categoryStats: CategoryStat[] = data?.categoryStats ?? [];
+  const categoryVolumeHistory: CategoryVolumeHistory = data?.categoryVolumeHistory ?? { categories: [], points: [] };
 
   const totalPages = page ? Math.ceil(page.total / PAGE_SIZE) : 0;
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
@@ -561,15 +673,10 @@ export default function MarketsPage() {
     <div className="p-6 max-w-7xl mx-auto space-y-6">
       <PageHeader
         title="Prediction Markets"
-        subtitle="Live probability data from Polymarket and Kalshi"
+        subtitle="Live volume and probability data across the full Polymarket and Kalshi universe"
         action={
           <div className="flex items-center gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={refresh}
-              disabled={isRefreshing}
-            >
+            <Button variant="secondary" size="sm" onClick={refresh} disabled={isRefreshing}>
               {isRefreshing ? "Refreshing…" : "↻ Refresh"}
             </Button>
             <button
@@ -587,13 +694,7 @@ export default function MarketsPage() {
         }
       />
 
-      <FilterModal
-        open={filterOpen}
-        onClose={() => setFilterOpen(false)}
-        filters={filters}
-        allCategories={categories}
-        onApply={applyFilters}
-      />
+      <FilterModal open={filterOpen} onClose={() => setFilterOpen(false)} filters={filters} allCategories={categories} onApply={applyFilters} />
 
       {loading && !data ? (
         <LoadingSpinner />
@@ -601,93 +702,63 @@ export default function MarketsPage() {
         <ErrorMessage message={error} />
       ) : (
         <>
-          {/* Key Signals */}
-          {topMarkets && topMarkets.markets.length > 0 && (
+          {topEvents && topEvents.events.length > 0 && (
             <div>
               <div className="flex items-baseline justify-between mb-3">
                 <div>
-                  <p className="text-xs text-[var(--text-muted)] uppercase tracking-wider">
-                    Key Signals
-                  </p>
+                  <p className="text-xs text-[var(--text-muted)] uppercase tracking-wider">Key Signals</p>
                   <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
-                    Top 8 markets by trading volume — high volume ≠ high probability
+                    Parent events ranked by total event volume, with leading contracts surfaced directly
                   </p>
                 </div>
                 <DataFreshnessBadge snapshotTime={summary?.latest_snapshot_time ?? null} />
               </div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                {topMarkets.markets.map((m) => (
-                  <KeySignalCard key={m.market_id} market={m} />
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                {topEvents.events.map((event) => (
+                  <EventGroupCard key={`${event.source}:${event.event_id}`} event={event} />
                 ))}
               </div>
             </div>
           )}
 
-          {/* Summary metrics */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <MetricCard label="Total Markets" value={(summary?.total_markets ?? 0).toLocaleString()} subtitle={`${summary?.sources.join(" + ") ?? "—"}`} />
             <MetricCard
-              label="Total Markets"
-              value={(summary?.total_markets ?? 0).toLocaleString()}
-              subtitle={`${summary?.sources.join(", ") ?? "—"}`}
+              label="High Conviction"
+              value={(summary?.high_conviction_count ?? 0).toLocaleString()}
+              subtitle={`${summary && summary.total_markets > 0 ? Math.round((summary.high_conviction_count / summary.total_markets) * 100) : 0}% with clear YES/NO signal`}
             />
-            <MetricCard
-              label="Avg Probability"
-              value={fmtPct(summary?.avg_probability ?? 0)}
-              subtitle="weighted across all outcomes"
-            />
-            <MetricCard
-              label="Total Volume"
-              value={fmtVolume(summary?.total_volume_usd ?? 0)}
-              subtitle="cumulative USD"
-            />
-            <MetricCard
-              label="Categories"
-              value={summary?.category_count ?? 0}
-              subtitle={`${summary?.source_count ?? 0} sources`}
-            />
+            <MetricCard label="Total Volume" value={fmtVolume(summary?.total_volume_usd ?? 0)} subtitle="combined Polymarket + Kalshi" />
+            <MetricCard label="Closing This Week" value={(summary?.closing_this_week ?? 0).toLocaleString()} subtitle="markets resolving in 7 days" />
           </div>
 
-          {/* Category sentiment heatmap */}
-          {categoryStats.length > 0 && (
+          {(categoryStats.length > 0 || categoryVolumeHistory.points.length > 0) && (
             <Card>
-              <CategorySentimentMap stats={categoryStats} />
+              <CategoryOverviewGrid stats={categoryStats} />
+              <CategoryVolumeTrendChart history={categoryVolumeHistory} />
             </Card>
           )}
 
-          {/* Markets table */}
           <Card>
             <div className="space-y-4">
-              {/* Active filter summary */}
               {filterCount > 0 && (
-                <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+                <div className="flex items-center gap-2 text-xs text-[var(--text-muted)] flex-wrap">
                   <span>Filters active:</span>
-                  {filters.timeHorizon !== "upcoming" && (
-                    <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/15 text-[var(--accent)]">
-                      {filters.timeHorizon}
-                    </span>
-                  )}
-                  {filters.minVolume > 0 && (
-                    <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/15 text-[var(--accent)]">
-                      {fmtVolume(filters.minVolume)}+ vol
-                    </span>
-                  )}
-                  {filters.sources.map((s) => (
-                    <span key={s} className="px-2 py-0.5 rounded-full bg-[var(--accent)]/15 text-[var(--accent)]">
-                      {s}
-                    </span>
+                  {filters.timeHorizon !== "upcoming" && <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/15 text-[var(--accent)]">{filters.timeHorizon}</span>}
+                  {filters.minVolume > 0 && <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/15 text-[var(--accent)]">{fmtVolume(filters.minVolume)}+ vol</span>}
+                  {filters.sources.map((source) => (
+                    <span key={source} className="px-2 py-0.5 rounded-full bg-[var(--accent)]/15 text-[var(--accent)]">{source}</span>
                   ))}
-                  {filters.categories.map((c) => (
-                    <span key={c} className="px-2 py-0.5 rounded-full bg-[var(--accent)]/15 text-[var(--accent)]">
-                      {c}
-                    </span>
+                  {filters.categories.map((category) => (
+                    <span key={category} className="px-2 py-0.5 rounded-full bg-[var(--accent)]/15 text-[var(--accent)]">{titleCase(category)}</span>
                   ))}
-                  {!filters.hideResolved && (
-                    <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400">
-                      showing resolved
-                    </span>
-                  )}
+                  {!filters.hideResolved && <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400">showing resolved</span>}
                   <button
-                    onClick={() => { setFilters(DEFAULT_FILTERS); setOffset(0); setSortDir("asc"); }}
+                    onClick={() => {
+                      setFilters(DEFAULT_FILTERS);
+                      setOffset(0);
+                      setSortDir("asc");
+                    }}
                     className="ml-auto text-[var(--text-muted)] hover:text-[var(--text)] underline"
                   >
                     Clear all
@@ -695,7 +766,6 @@ export default function MarketsPage() {
                 </div>
               )}
 
-              {/* Table */}
               <div className="rounded-lg border border-[var(--border)] overflow-hidden">
                 <div className="flex items-center gap-4 px-4 py-2 bg-[var(--bg)] border-b border-[var(--border)] text-[10px] uppercase tracking-wider">
                   <span className="w-8 shrink-0 text-[var(--text-muted)]">Src</span>
@@ -711,16 +781,18 @@ export default function MarketsPage() {
                   </div>
                   <span className="w-4 shrink-0" />
                 </div>
+
                 {page && page.markets.length > 0 ? (
-                  page.markets.map((m) => (
-                    <MarketRow key={m.market_id} market={m} />
-                  ))
+                  page.markets.map((market) => <MarketRow key={market.market_id} market={market} />)
                 ) : (
                   <div className="py-12 text-center text-sm text-[var(--text-muted)]">
                     No markets found.{" "}
                     {filterCount > 0 && (
                       <button
-                        onClick={() => { setFilters(DEFAULT_FILTERS); setOffset(0); }}
+                        onClick={() => {
+                          setFilters(DEFAULT_FILTERS);
+                          setOffset(0);
+                        }}
                         className="underline hover:text-[var(--text)]"
                       >
                         Clear filters
@@ -730,27 +802,14 @@ export default function MarketsPage() {
                 )}
               </div>
 
-              {/* Pagination */}
               {totalPages > 1 && (
                 <div className="flex items-center justify-between pt-1">
-                  <span className="text-xs text-[var(--text-muted)]">
-                    Page {currentPage} of {totalPages} ({page?.total.toLocaleString()} total)
-                  </span>
+                  <span className="text-xs text-[var(--text-muted)]">Page {currentPage} of {totalPages} ({page?.total.toLocaleString()} total)</span>
                   <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      disabled={offset === 0}
-                      onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-                    >
+                    <Button size="sm" variant="secondary" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}>
                       ← Prev
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      disabled={offset + PAGE_SIZE >= (page?.total ?? 0)}
-                      onClick={() => setOffset(offset + PAGE_SIZE)}
-                    >
+                    <Button size="sm" variant="secondary" disabled={offset + PAGE_SIZE >= (page?.total ?? 0)} onClick={() => setOffset(offset + PAGE_SIZE)}>
                       Next →
                     </Button>
                   </div>

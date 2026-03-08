@@ -27,6 +27,7 @@ import { api, PredictionMarket, MarketSnapshot } from "@/lib/api";
 // ─── Helpers ─────────────────────────────────────────────
 
 function fmtVolume(v: number): string {
+  if (v >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(2)}B`;
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
   if (v >= 1_000) return `$${(v / 1_000).toFixed(1)}K`;
   return `$${v.toFixed(0)}`;
@@ -137,6 +138,7 @@ export default function MarketDetailPage() {
               [
                 source || market.source,
                 market.category,
+                market.event_title,
                 market.outcome,
               ]
                 .filter(Boolean)
@@ -293,14 +295,24 @@ export default function MarketDetailPage() {
             </dl>
             {market.market_url && (
               <div className="mt-4 pt-3 border-t border-[var(--border)]">
-                <a
-                  href={market.market_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm text-[var(--accent)] hover:underline"
-                >
-                  View on {market.source === "polymarket" ? "Polymarket" : "Kalshi"} ↗
-                </a>
+                <div className="flex items-center gap-4 flex-wrap">
+                  {market.event_id && (
+                    <Link
+                      href={`/markets/events/${encodeURIComponent(market.source)}/${encodeURIComponent(market.event_id)}`}
+                      className="text-sm text-[var(--accent)] hover:underline"
+                    >
+                      View parent event
+                    </Link>
+                  )}
+                  <a
+                    href={market.market_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-[var(--accent)] hover:underline"
+                  >
+                    View on {market.source === "polymarket" ? "Polymarket" : "Kalshi"} ↗
+                  </a>
+                </div>
               </div>
             )}
           </Card>
