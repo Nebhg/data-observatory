@@ -88,31 +88,73 @@ function ProbBar({ value }: { value: number }) {
 
 function CategorySentimentMap({ stats }: { stats: CategoryStat[] }) {
   if (!stats || stats.length === 0) return null;
-  const maxVol = Math.max(...stats.map((s) => s.total_volume_usd), 1);
+  const totalVol = stats.reduce((sum, s) => sum + s.total_volume_usd, 0) || 1;
 
   return (
     <div>
-      <p className="text-xs text-[var(--text-muted)] uppercase tracking-wider mb-3">
-        Category Sentiment
-      </p>
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs text-[var(--text-muted)] uppercase tracking-wider">
+          Market Sentiment by Category
+        </p>
+        <p className="text-[11px] text-[var(--text-muted)]">avg YES probability · sorted by volume</p>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
         {stats.map((s) => {
           const pct = Math.round(s.avg_probability * 100);
-          const volRatio = s.total_volume_usd / maxVol;
-          // Color: green ≥65%, indigo 40–64%, red <40%
-          const hue = pct >= 65 ? "142, 72%, 29%" : pct >= 40 ? "225, 70%, 40%" : "0, 72%, 35%";
-          const opacity = 0.25 + volRatio * 0.65;
+          const volShare = s.total_volume_usd / totalVol;
+          const sentiment = pct >= 65 ? "Bullish" : pct >= 40 ? "Mixed" : "Bearish";
+          const sentimentColor =
+            pct >= 65 ? "text-emerald-400" : pct >= 40 ? "text-indigo-400" : "text-red-400";
+          const barColor =
+            pct >= 65 ? "bg-emerald-500" : pct >= 40 ? "bg-indigo-500" : "bg-red-500";
+
           return (
             <div
               key={s.category}
-              className="rounded-lg p-3 border border-white/5 flex flex-col gap-1"
-              style={{ background: `hsla(${hue}, ${opacity})` }}
+              className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-4 space-y-3"
             >
-              <p className="text-[11px] font-semibold capitalize truncate">{s.category}</p>
-              <p className="text-2xl font-bold tabular-nums">{pct}%</p>
-              <p className="text-[10px] text-white/60 leading-tight">
-                {fmtVolume(s.total_volume_usd)} · {s.count} markets
-              </p>
+              {/* Header */}
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold capitalize truncate">{s.category}</p>
+                  <p className={`text-[10px] font-medium mt-0.5 ${sentimentColor}`}>{sentiment}</p>
+                </div>
+                <span className="text-[10px] text-[var(--text-muted)] shrink-0">{s.count} mkts</span>
+              </div>
+
+              {/* YES probability bar */}
+              <div className="space-y-1">
+                <div className="flex justify-between items-baseline">
+                  <span className="text-[9px] text-[var(--text-muted)]">NO</span>
+                  <span className="text-sm font-bold tabular-nums">{pct}%</span>
+                  <span className="text-[9px] text-[var(--text-muted)]">YES</span>
+                </div>
+                <div className="h-2 rounded-full bg-zinc-800 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full ${barColor} transition-all duration-500`}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+              </div>
+
+              {/* Volume + share bar */}
+              <div className="space-y-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] text-[var(--text-muted)]">Volume</span>
+                  <span className="text-xs font-semibold tabular-nums">
+                    {fmtVolume(s.total_volume_usd)}
+                  </span>
+                </div>
+                <div className="h-1 rounded-full bg-zinc-800 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-zinc-400 transition-all duration-500"
+                    style={{ width: `${volShare * 100}%` }}
+                  />
+                </div>
+                <p className="text-[9px] text-[var(--text-muted)]">
+                  {(volShare * 100).toFixed(0)}% of total market volume
+                </p>
+              </div>
             </div>
           );
         })}
@@ -562,10 +604,15 @@ export default function MarketsPage() {
           {/* Key Signals */}
           {topMarkets && topMarkets.markets.length > 0 && (
             <div>
-              <div className="flex items-center justify-between mb-3">
-                <p className="text-xs text-[var(--text-muted)] uppercase tracking-wider">
-                  Key Signals — Highest Volume Markets
-                </p>
+              <div className="flex items-baseline justify-between mb-3">
+                <div>
+                  <p className="text-xs text-[var(--text-muted)] uppercase tracking-wider">
+                    Key Signals
+                  </p>
+                  <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
+                    Top 8 markets by trading volume — high volume ≠ high probability
+                  </p>
+                </div>
                 <DataFreshnessBadge snapshotTime={summary?.latest_snapshot_time ?? null} />
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
