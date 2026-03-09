@@ -33,6 +33,13 @@ function fmtVolume(v: number): string {
   return `$${v.toFixed(0)}`;
 }
 
+function normalizeExternalUrl(source: string, url: string | null, eventId?: string | null): string | null {
+  if (!url) return null;
+  if (source !== "kalshi") return url;
+  const ticker = (eventId || "").toLowerCase().replace(/-\d{2}[a-z]{3}\d{0,4}$/i, "").replace(/-\d{2,4}$/i, "");
+  return ticker ? `https://kalshi.com/markets/${ticker}` : url;
+}
+
 function fmtTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
     month: "short",
@@ -85,6 +92,7 @@ export default function MarketDetailPage() {
 
   const market: PredictionMarket | undefined = data?.market;
   const snapshots: MarketSnapshot[] = data?.snapshots ?? [];
+  const externalUrl = market ? normalizeExternalUrl(market.source, market.market_url, market.event_id || market.market_id) : null;
 
   // Probability over time: downsample to max 200 points for perf
   const chartData =
@@ -293,7 +301,7 @@ export default function MarketDetailPage() {
                 </div>
               ))}
             </dl>
-            {market.market_url && (
+            {externalUrl && (
               <div className="mt-4 pt-3 border-t border-[var(--border)]">
                 <div className="flex items-center gap-4 flex-wrap">
                   {market.event_id && (
@@ -305,7 +313,7 @@ export default function MarketDetailPage() {
                     </Link>
                   )}
                   <a
-                    href={market.market_url}
+                    href={externalUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-sm text-[var(--accent)] hover:underline"

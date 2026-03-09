@@ -224,6 +224,18 @@ export interface CategoryVolumeHistoryPoint {
 export interface CategoryVolumeHistory {
   categories: string[];
   points: CategoryVolumeHistoryPoint[];
+  interval?: "day" | "week" | "month";
+  days?: number;
+}
+
+export interface CategorySourceStat {
+  source: "polymarket" | "kalshi";
+  category: string;
+  count: number;
+  event_count: number;
+  avg_probability: number;
+  total_volume_usd: number;
+  high_conviction_count: number;
 }
 
 export interface MarketSnapshot {
@@ -368,7 +380,12 @@ export const api = {
   getTableSchema: (table: string) => fetchApi<Record<string, unknown>>(`/api/schema/${table}`),
 
   // Prediction Markets
-  getPMSummary: () => fetchApi<PMSummary>("/api/prediction-markets/summary"),
+  getPMSummary: (params?: { source?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.source) q.set("source", params.source);
+    const qs = q.toString();
+    return fetchApi<PMSummary>(`/api/prediction-markets/summary${qs ? `?${qs}` : ""}`);
+  },
   getMarkets: (params?: {
     category?: string;
     resolved?: boolean;
@@ -410,14 +427,42 @@ export const api = {
       `/api/prediction-markets/category-stats${qs ? `?${qs}` : ""}`
     );
   },
-  getCategoryVolumeHistory: (params?: { source?: string; categories_limit?: number; days?: number }) => {
+  getCategoryVolumeHistory: (params?: {
+    source?: string;
+    categories?: string[];
+    categories_limit?: number;
+    days?: number;
+    interval?: "day" | "week" | "month";
+    include_sources?: boolean;
+  }) => {
     const q = new URLSearchParams();
     if (params?.source) q.set("source", params.source);
+    if (params?.categories) {
+      for (const category of params.categories) q.append("categories", category);
+    }
     if (params?.categories_limit !== undefined) q.set("categories_limit", String(params.categories_limit));
     if (params?.days !== undefined) q.set("days", String(params.days));
+    if (params?.interval) q.set("interval", params.interval);
+    if (params?.include_sources !== undefined) q.set("include_sources", String(params.include_sources));
     const qs = q.toString();
     return fetchApi<CategoryVolumeHistory>(
       `/api/prediction-markets/category-volume-history${qs ? `?${qs}` : ""}`
+    );
+  },
+  getCategorySourceStats: (params?: {
+    categories?: string[];
+    time_horizon?: "all" | "upcoming" | "past";
+    min_volume?: number;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.categories) {
+      for (const category of params.categories) q.append("categories", category);
+    }
+    if (params?.time_horizon) q.set("time_horizon", params.time_horizon);
+    if (params?.min_volume !== undefined) q.set("min_volume", String(params.min_volume));
+    const qs = q.toString();
+    return fetchApi<CategorySourceStat[]>(
+      `/api/prediction-markets/category-source-stats${qs ? `?${qs}` : ""}`
     );
   },
   getMarket: (id: string) =>
@@ -440,11 +485,21 @@ export const api = {
       `/api/prediction-markets/top-markets${qs ? `?${qs}` : ""}`
     );
   },
-  getTopEvents: (params?: { limit?: number; min_volume?: number; source?: string }) => {
+  getTopEvents: (params?: {
+    limit?: number;
+    min_volume?: number;
+    source?: string;
+    categories?: string[];
+    time_horizon?: "all" | "upcoming" | "past";
+  }) => {
     const q = new URLSearchParams();
     if (params?.limit !== undefined) q.set("limit", String(params.limit));
     if (params?.min_volume !== undefined) q.set("min_volume", String(params.min_volume));
     if (params?.source) q.set("source", params.source);
+    if (params?.categories) {
+      for (const category of params.categories) q.append("categories", category);
+    }
+    if (params?.time_horizon) q.set("time_horizon", params.time_horizon);
     const qs = q.toString();
     return fetchApi<{ events: PredictionMarketEvent[]; total: number }>(
       `/api/prediction-markets/top-events${qs ? `?${qs}` : ""}`
@@ -454,13 +509,53 @@ export const api = {
     fetchApi<PredictionMarketEvent>(
       `/api/prediction-markets/events/${encodeURIComponent(source)}/${encodeURIComponent(eventId)}`
     ),
-  getEventHistory: (source: string, eventId: string, params?: { top_n?: number; points_per_series?: number }) => {
+  getEventHistory: (source: string, eventId: string, params?: {
+    top_n?: number;
+    lookback_days?: number;
+    interval?: "hour" | "day" | "week";
+  }) => {
     const q = new URLSearchParams();
     if (params?.top_n !== undefined) q.set("top_n", String(params.top_n));
-    if (params?.points_per_series !== undefined) q.set("points_per_series", String(params.points_per_series));
+    if (params?.lookback_days !== undefined) q.set("lookback_days", String(params.lookback_days));
+    if (params?.interval) q.set("interval", params.interval);
     const qs = q.toString();
     return fetchApi<PredictionMarketEventHistory>(
       `/api/prediction-markets/events/${encodeURIComponent(source)}/${encodeURIComponent(eventId)}/history${qs ? `?${qs}` : ""}`
+    );
+  },
+  suggestEvents: (params: { q: string; limit?: number; source?: string }) => {
+    const q = new URLSearchParams();
+    q.set("q", params.q);
+    if (params.limit !== undefined) q.set("limit", String(params.limit));
+    if (params.source) q.set("source", params.source);
+    return fetchApi<Array<{
+      event_id: string;
+      event_title: string;
+      source: string;
+      category: string;
+      market_count: number;
+      total_volume_usd: number;
+    }>>(`/api/prediction-markets/suggest-events?${q.toString()}`);
+  },
+  searchEvents: (params: {
+    q: string;
+    limit?: number;
+    source?: string;
+    categories?: string[];
+    min_volume?: number;
+    time_horizon?: "all" | "upcoming" | "past";
+  }) => {
+    const q = new URLSearchParams();
+    q.set("q", params.q);
+    if (params.limit !== undefined) q.set("limit", String(params.limit));
+    if (params.source) q.set("source", params.source);
+    if (params.categories) {
+      for (const category of params.categories) q.append("categories", category);
+    }
+    if (params.min_volume !== undefined) q.set("min_volume", String(params.min_volume));
+    if (params.time_horizon) q.set("time_horizon", params.time_horizon);
+    return fetchApi<{ events: PredictionMarketEvent[]; total: number }>(
+      `/api/prediction-markets/search-events?${q.toString()}`
     );
   },
   searchMarkets: (q: string, limit = 50) =>
