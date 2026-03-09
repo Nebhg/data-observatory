@@ -7,6 +7,8 @@ const INTERNAL_API_URL =
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  outputFileTracingRoot: process.cwd(),
+  allowedDevOrigins: ["127.0.0.1"],
   // Proxy all /api/* calls to the FastAPI backend.
   // Browser always talks to its own origin — no CORS needed.
   async rewrites() {

@@ -6,7 +6,16 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "type-check": "tsc --noEmit",
+    "check": "npm run lint && npm run type-check && npm run build",
+    "api-contract:check": "npm run type-check && npm run build",
+    "playwright:install": "playwright install chromium",
+    "browser-review:capture": "playwright test tests/browser-review --project=chromium --grep @review --reporter=line",
+    "browser-review:before": "REVIEW_LABEL=before npm run browser-review:capture",
+    "browser-review:after": "REVIEW_LABEL=after npm run browser-review:capture",
+    "browser-review:report": "playwright show-report",
+    "frontend-test": "playwright test --project=chromium"
   },
   "dependencies": {
     "next": "^15.1.0",
@@ -19,6 +28,7 @@
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@playwright/test": "^1.52.0",
     "tailwindcss": "^4.0.0",
     "@tailwindcss/postcss": "^4.0.0",
     "postcss": "^8.4.0"
