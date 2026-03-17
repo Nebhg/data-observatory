@@ -34,7 +34,7 @@ cd /Users/haras-gummer/data-observatory
 - [ ] No `any` types introduced as workarounds
 - [ ] If params changed: query param names in fetch helpers match backend route exactly
 
-When all items checked, return to `product-lead` with:
+When all items checked, return to `orchestrator` with:
 ```
 {
   handoff: "API_CONTRACT_CHANGE",
